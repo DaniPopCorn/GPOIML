@@ -1,1 +1,1 @@
-pandas torch scikit-learn momentfm
+momentfm pandas numpy scikit-learn torch
