@@ -1,6 +1,6 @@
 # 📈 Labor Market Forecasting 2026: MOMENT Foundation Model
 
-This project implements an advanced predictive analysis system for the labor market using **MOMENT**, a state-of-the-art *Time-series Foundation Model* based on the Transformer architecture. The system analyzes historical supply and demand data (2013-2025) to generate a strategic projection for the year **2026**.
+This project implements an advanced predictive analysis system for the labor market using **MOMENT**, a state-of-the-art *Time-series Foundation Model* based on the Transformer architecture. The system analyzes historical supply and demand data (2010-2025) to generate a strategic projection for the year **2026**.
 
 ## 🚀 Model Overview
 Unlike classical statistical models (such as ARIMA), MOMENT is pre-trained on millions of diverse time series. This allows the model to recognize complex patterns, trends, and seasonalities even on small datasets, operating through a **Linear Probing** technique (fine-tuning of the final neural layer).
