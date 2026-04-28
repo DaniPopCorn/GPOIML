@@ -10,31 +10,32 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, confu
 from momentfm import MOMENTPipeline
 
 # ==========================================
-# 1. CONFIGURAZIONE E CARICAMENTO DATI
+# 1. CONFIGURATION AND DATA LOADING
 # ==========================================
-CSV_FILE_IN = sys.argv[1];
-CSV_FILE_OUT = sys.argv[2];
+CSV_FILE_IN = sys.argv[1]
+CSV_FILE_OUT = sys.argv[2]
 
-#debug CSV_FILE_IN = "C:/Users/Filippo/Desktop/scuola/5DS/GPOI/Data.csv";
-#debug CSV_FILE_OUT = "C:/Users/Filippo/Desktop/scuola/5DS/GPOI/Out.csv";
-# Utilizziamo latin1 per gestire i caratteri speciali di Excel/Windows
+# debug CSV_FILE_IN = "C:/Users/Filippo/Desktop/scuola/5DS/GPOI/Data.csv";
+# debug CSV_FILE_OUT = "C:/Users/Filippo/Desktop/scuola/5DS/GPOI/Out.csv";
+
+# Use latin1 encoding to handle special characters from Excel/Windows exports
 df = pd.read_csv(CSV_FILE_IN, encoding='latin1').iloc[:-1]
 
-# Parametri modello
-CONTEXT_SIZE = 5   # Anni passati da osservare
-SEQ_LEN = 512      # Lunghezza richiesta da MOMENT
+# Model Parameters
+CONTEXT_SIZE = 5   # Past years to observe
+SEQ_LEN = 512      # Input length required by the MOMENT model
 TARGET_YEAR = 2026 
 
-ultimo_anno_csv = int(df['Anno'].max())
-HORIZON = TARGET_YEAR - ultimo_anno_csv
+last_year_in_csv = int(df['Anno'].max())
+HORIZON = TARGET_YEAR - last_year_in_csv
 
-# Pulizia: rimuoviamo l'anno per le feature
+# Data Cleanup: Remove the 'Year' column for feature processing
 features_df = df.drop(columns=['Anno'])
 N_CHANNELS = features_df.shape[1]
-dati_numpy = features_df.values
+numpy_data = features_df.values
 
 # ==========================================
-# 2. DATASET E DATALOADER
+# 2. DATASET AND DATALOADER
 # ==========================================
 class MacroDataDataset(Dataset):
     def __init__(self, data, context_size, forecast_horizon, seq_len):
@@ -45,38 +46,40 @@ class MacroDataDataset(Dataset):
         self.seq_len = seq_len
 
     def __len__(self):
+        # Calculate available windows for training
         return len(self.data) - self.context_size - self.forecast_horizon + 1
 
     def __getitem__(self, idx):
         x_real = self.data[idx : idx + self.context_size]
         y_real = self.data[idx + self.context_size : idx + self.context_size + self.forecast_horizon]
         
-        # Padding
+        # Padding logic to reach SEQ_LEN (512)
         x_padded = np.zeros((self.seq_len, x_real.shape[1]))
         x_padded[-self.context_size:] = x_real
         mask = np.zeros(self.seq_len)
-        mask[-self.context_size:] = 1
+        mask[-self.context_size:] = 1 # Mask identifies real data vs padding
         
         return (torch.tensor(x_padded, dtype=torch.float32).transpose(0, 1), 
                 torch.tensor(mask, dtype=torch.float32), 
                 torch.tensor(y_real, dtype=torch.float32).transpose(0, 1))
 
-dataset = MacroDataDataset(dati_numpy, CONTEXT_SIZE, HORIZON, SEQ_LEN)
+dataset = MacroDataDataset(numpy_data, CONTEXT_SIZE, HORIZON, SEQ_LEN)
 dataloader = DataLoader(dataset, batch_size=min(4, len(dataset)), shuffle=True)
 
 # ==========================================
-# 3. CARICAMENTO MODELLO E FINE-TUNING
+# 3. MODEL LOADING AND FINE-TUNING
 # ==========================================
-print(f"Initializing year {TARGET_YEAR}...")
+print(f"Initializing for target year {TARGET_YEAR}...")
 model = MOMENTPipeline.from_pretrained(
     "AutonLab/MOMENT-1-large", 
     model_kwargs={"task_name": "forecasting", "forecast_horizon": HORIZON, "n_channels": N_CHANNELS}
 )
 model.init()
 
-# Congeliamo il backbone, alleniamo solo la testa (Linear Probing)
+# Linear Probing: Freeze the foundation model backbone and only train the prediction head
 for name, param in model.named_parameters():
-    if "head" not in name: param.requires_grad = False
+    if "head" not in name: 
+        param.requires_grad = False
 
 optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
 criterion = nn.MSELoss()
@@ -96,7 +99,7 @@ for epoch in range(epochNum):
     print(f"Epoch {epoch+1}/{epochNum} - Loss: {total_loss/len(dataloader):.4f}")
 
 # ==========================================
-# 4. CALCOLO METRICHE (Accuracy, Precision, Recall, CM)
+# 4. METRICS CALCULATION (Accuracy, Precision, Recall, Confusion Matrix)
 # ==========================================
 model.eval()
 all_preds, all_trues = [], []
@@ -107,7 +110,7 @@ with torch.no_grad():
         all_preds.append(out.numpy())
         all_trues.append(batch_y.numpy())
 
-# Trasformiamo in trend binario: 1 = Crescita rispetto alla media, 0 = Calo/Stasi
+# Transform results into binary trends: 1 = Growth (relative to mean), 0 = Decline/Stagnation
 y_pred_bin = (np.concatenate(all_preds) > 0).astype(int).flatten()
 y_true_bin = (np.concatenate(all_trues) > 0).astype(int).flatten()
 
@@ -119,13 +122,14 @@ print("\nConfusion Matrix:")
 print(confusion_matrix(y_true_bin, y_pred_bin))
 
 # ==========================================
-# 5. PREVISIONE FINALE 2026 E SALVATAGGIO
+# 5. FINAL 2026 PREDICTION AND EXPORT
 # ==========================================
 print("\nGenerating final report...")
-ultimi_dati = dataset.scaler.transform(features_df.tail(CONTEXT_SIZE).values)
+# Scale the most recent data points for inference
+latest_data = dataset.scaler.transform(features_df.tail(CONTEXT_SIZE).values)
 
 x_inf = np.zeros((SEQ_LEN, N_CHANNELS))
-x_inf[-CONTEXT_SIZE:] = ultimi_dati
+x_inf[-CONTEXT_SIZE:] = latest_data
 mask_inf = np.zeros(SEQ_LEN)
 mask_inf[-CONTEXT_SIZE:] = 1
 
@@ -135,13 +139,14 @@ m_t = torch.tensor(mask_inf, dtype=torch.float32).unsqueeze(0)
 with torch.no_grad():
     pred_raw = model(x_enc=x_t, input_mask=m_t).forecast.squeeze(0).transpose(0, 1).numpy()
 
+# Inverse transform to return to original data scale
 pred_final = dataset.scaler.inverse_transform(pred_raw)
 
-# Creazione DataFrame e salvataggio
-anni_futuri = [ultimo_anno_csv + i for i in range(1, HORIZON + 1)]
+# Create output DataFrame and save
+future_years = [last_year_in_csv + i for i in range(1, HORIZON + 1)]
 df_out = pd.DataFrame(pred_final, columns=features_df.columns)
-df_out.insert(0, 'Anno', anni_futuri)
+df_out.insert(0, 'Anno', future_years)
 
 df_out.to_csv(CSV_FILE_OUT, index=False, encoding='latin1')
 print("--------------------------------------------------")
-print("Data saved correctly")
+print("Data saved successfully.")
